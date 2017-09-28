@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,12 +19,13 @@ import (
 	"syscall"
 	"time"
 
+	_ "net/http/pprof"
+
 	"github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/golang/gddo/httputil"
 	"github.com/gorilla/mux"
 	yaml "gopkg.in/yaml.v2"
-	_ "net/http/pprof"
 )
 
 const (
@@ -32,6 +35,11 @@ const (
 
 	// The top-level key in the JSON for the default (not client-specific answers)
 	DEFAULT_KEY = "default"
+)
+
+const (
+	resolvConfLocation = "/etc/resolv.conf"
+	ipLocalhost        = `^nameserver\s+((127(\.[0-9]{1,3}){3})|(::1)$)`
 )
 
 var (
@@ -132,6 +140,10 @@ func appMain(ctx *cli.Context) error {
 		}
 	}
 
+	if err := validDNSNameServer(); err != nil {
+		return err
+	}
+
 	sc := NewServerConfig(
 		ctx.GlobalString("answers"),
 		ctx.GlobalString("listen"),
@@ -169,6 +181,26 @@ func appMain(ctx *cli.Context) error {
 	sc.RunServer()
 
 	return nil
+}
+
+// checkDNSNameServer check available dns nameserver, prevent dns lookup error with rancher server domain
+func validDNSNameServer() error {
+	input, err := os.Open(resolvConfLocation)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	scanner := bufio.NewScanner(input)
+	for scanner.Scan() {
+		text := scanner.Text()
+		if strings.HasPrefix(text, "nameserver") {
+			if isloopback, err := regexp.MatchString(ipLocalhost, text); err == nil && !isloopback {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("Only the loopback IP address configured as the DNS servers on the host file /etc/resolv.conf, can’t accept it, domain names inside container can’t get resolved")
 }
 
 func NewServerConfig(answersFilePath, listen, listenReload string, enableXff bool) *ServerConfig {
